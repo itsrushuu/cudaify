@@ -8,8 +8,8 @@ user-controlled X-User-Id headers.
 import hashlib
 import os
 import sqlite3
-from typing import Optional
-from fastapi import APIRouter, Form, HTTPException, Depends, Header
+from typing import Optional, Tuple
+from fastapi import APIRouter, Form, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -21,32 +21,46 @@ from app.models import (
     delete_session,
     cleanup_expired_sessions,
     get_user_by_id,
+    get_conn,
 )
+from app.rate_limit import limiter
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
 
+# PBKDF2-HMAC-SHA256 iteration count. 100k is the OWASP 2021 minimum;
+# 600k is the OWASP 2023 recommendation. Existing hashes with fewer
+# iterations are still verified and rehashed on next successful login.
+PBKDF2_ITERATIONS = 600_000
 
-def hash_password(password: str) -> str:
+
+def hash_password(password: str, iterations: int = PBKDF2_ITERATIONS) -> str:
     """Hash a password using PBKDF2-HMAC-SHA256 with a random salt."""
     salt = hashlib.sha256(os.urandom(16)).hexdigest()[:32]
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
-    return f"pbkdf2_sha256$100000${salt}${dk.hex()}"
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${dk.hex()}"
 
 
-def verify_password(password: str, stored: str) -> bool:
-    """Verify a password against a stored pbkdf2_sha256 hash."""
+def verify_password(password: str, stored: str) -> tuple[bool, bool]:
+    """Verify a password against a stored pbkdf2_sha256 hash.
+
+    Returns (is_valid, needs_rehash). needs_rehash is True when the
+    stored hash uses fewer than PBKDF2_ITERATIONS iterations, so the
+    caller can rehash on next successful login.
+    """
     try:
         parts = stored.split("$")
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
-            return False
+            return False, False
         _, iterations, salt, hash_hex = parts
         dk = hashlib.pbkdf2_hmac(
             "sha256", password.encode(), salt.encode(), int(iterations)
         )
-        return dk.hex() == hash_hex
+        is_valid = dk.hex() == hash_hex
+        needs_rehash = is_valid and int(iterations) < PBKDF2_ITERATIONS
+        return is_valid, needs_rehash
     except (ValueError, IndexError):
-        return False
+        return False, False
 
 
 def get_current_user(
@@ -69,7 +83,12 @@ def get_current_user(
 
 
 @router.post("/signup")
-def signup(username: str = Form(...), password: str = Form(...)):
+@limiter.limit("3/minute")
+def signup(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
     """Register a new user."""
     if not username or not username.strip():
         raise HTTPException(status_code=400, detail="Username cannot be empty.")
@@ -84,11 +103,45 @@ def signup(username: str = Form(...), password: str = Form(...)):
 
 
 @router.post("/login")
-def login(username: str = Form(...), password: str = Form(...)):
-    """Authenticate a user and create a session."""
+@limiter.limit("5/minute")
+def login(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    """Authenticate a user and create a session.
+
+    Rotates session tokens: any existing sessions for the user are deleted
+    before a new one is created, preventing session fixation and stale-token
+    reuse.
+    """
     user = get_user(username.strip())
-    if not user or not verify_password(password, user["password_hash"]):
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
+
+    is_valid, needs_rehash = verify_password(password, user["password_hash"])
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
+
+    # Rehash with current iteration count if the stored hash is outdated.
+    if needs_rehash:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (hash_password(password), user["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # Rotate sessions: delete any existing sessions for this user first.
+    conn = get_conn()
+    try:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        conn.commit()
+    finally:
+        conn.close()
 
     token = create_session(user["id"], ttl_minutes=60)
     return JSONResponse(

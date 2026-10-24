@@ -548,7 +548,10 @@ def run_pipeline(
         if vr.success:
             verdict = _parse_verdict(vr)
             if verdict == "passed":
-                final_status = "static_passed"
+                # AI verifier approval only establishes AI review, not
+                # compilation or runtime verification. static_passed requires
+                # actual static compilation (Phase 2).
+                final_status = "ai_reviewed"
                 converged = True
             elif verdict == "failed":
                 final_status = "ai_reviewed"

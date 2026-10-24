@@ -76,7 +76,7 @@ def _build_translation_response(
 
 @router.post("")
 def translate(
-    source_code: str = Form(...),
+    source_code: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
     user_id: int = Depends(get_current_user_id),
     use_pipeline: str = Form("true"),

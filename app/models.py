@@ -9,10 +9,16 @@ from typing import Optional, List, Dict, Any
 DB_PATH = os.getenv("CUDAIFY_DB_PATH", "cudaify.db")
 
 # Valid verification status values, in order of increasing confidence.
+# NOTE: "generated", "ai_reviewed", and "static_passed" are AI-assisted or
+# static-analysis statuses. They do NOT mean the code was compiled or
+# executed. "compiled" requires successful nvcc compilation; "runtime_tested"
+# requires execution against reference outputs; "benchmarked" requires
+# performance measurement. The AI verifier's textual approval alone must
+# never independently establish compilation success or runtime correctness.
 VERIFICATION_STATUSES = (
     "generated",      # AI-generated, not independently verified
-    "ai_reviewed",    # Passed AI code-review stage
-    "static_passed",  # Passed static analysis checks
+    "ai_reviewed",    # Passed AI code-review stage (AI-only, no compilation)
+    "static_passed",  # Passed static analysis checks (not runtime execution)
     "compiled",       # Successfully compiled by nvcc (if available)
     "runtime_tested", # Passed runtime correctness tests
     "benchmarked",    # Performance benchmarked

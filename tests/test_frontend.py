@@ -8,7 +8,7 @@ SRC = "import numpy as np\n\ndef f(x, y):\n    return 2.0 * x + np.sin(y)\n"
 K0 = "__global__ void k(int n){ int i = 0; }"
 K1 = "__global__ void k(int n){ int i = 0; if (i < n) {} }"
 PIPELINE = {
-    "final_status": "static_passed", "iterations": 2, "converged": True, "final_cuda_code": K1,
+    "final_status": "ai_reviewed", "iterations": 2, "converged": True, "final_cuda_code": K1,
     "review_findings": [{"severity": "high", "category": "bounds", "message": "missing guard"}],
     "references": [{"title": "CUDA Best Practices Guide", "url": "https://docs.nvidia.com/cuda/x", "snippet": "s"}],
     "agent_results": [
@@ -22,7 +22,7 @@ PIPELINE = {
 
 def _result(with_pipeline=True):
     res = {"id": 1, "result": K1, "model": "m", "sections": {"CUDA KERNEL": K1},
-           "verification_status": "static_passed" if with_pipeline else "generated",
+           "verification_status": "ai_reviewed" if with_pipeline else "generated",
            "ir_summary": "", "tuning": {}, "ir": {}, "ir_comparison": {}}
     if with_pipeline:
         res["pipeline"] = PIPELINE
@@ -49,7 +49,7 @@ def app(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp(200, []))
 
     def make(result):
-        at = AppTest.from_file("frontend/streamlit_app.py", default_timeout=60)
+        at = AppTest.from_file("../streamlit_app.py", default_timeout=60)
         at.session_state["token"] = "t"
         at.session_state["user"] = {"id": 1, "username": "tester"}
         at.session_state["last_result"] = result
@@ -63,7 +63,7 @@ def test_result_panels_render(app):
     at = app(_result()).run()
     assert not at.exception
     md = " ".join(m.value for m in at.markdown)
-    assert "Trust summary" in md and "Compiled with nvcc" in md and "nvcc -O2" in md
+    assert "What was verified" in md and "Compiled with nvcc" in md and "nvcc -O2" in md
     assert "CUDA Best Practices Guide" in md                       # Tavily source shown
     labels = [e.label for e in at.expander]
     assert any("review/fix loop changed" in lbl for lbl in labels)

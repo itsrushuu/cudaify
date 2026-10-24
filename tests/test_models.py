@@ -8,6 +8,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import models as m
+from app.routes.auth import hash_password, verify_password, PBKDF2_ITERATIONS
 
 
 def _use_temp_db(monkeypatch, tmp_path):
@@ -81,3 +82,45 @@ def test_translation_to_dict(tmp_path, monkeypatch):
     assert d["verification_status"] == "ai_reviewed"
     assert d["pipeline_iterations"] == 3
     assert d["pipeline_converged"] is True
+
+
+def test_password_hashing_uses_600k_iterations():
+    """New passwords are hashed with PBKDF2-HMAC-SHA256 at 600k iterations."""
+    pw_hash = hash_password("testpassword123")
+    parts = pw_hash.split("$")
+    assert parts[0] == "pbkdf2_sha256"
+    assert int(parts[1]) == PBKDF2_ITERATIONS
+    assert PBKDF2_ITERATIONS >= 600_000
+
+
+def test_verify_password_valid_and_invalid():
+    """verify_password returns (is_valid, needs_rehash) tuple."""
+    pw_hash = hash_password("testpassword123")
+
+    # Valid password
+    is_valid, needs_rehash = verify_password("testpassword123", pw_hash)
+    assert is_valid is True
+    assert needs_rehash is False  # Fresh hash uses current iteration count
+
+    # Invalid password
+    is_valid, needs_rehash = verify_password("wrongpassword", pw_hash)
+    assert is_valid is False
+    assert needs_rehash is False
+
+
+def test_verify_password_rehash_needed_for_old_hashes():
+    """Old hashes with fewer iterations are verified but flagged for rehash."""
+    # Simulate an old hash with 100,000 iterations
+    old_hash = hash_password("oldpassword123", iterations=100_000)
+    parts = old_hash.split("$")
+    assert int(parts[1]) == 100_000  # Confirm old iteration count
+
+    # Should verify correctly but flag for rehash
+    is_valid, needs_rehash = verify_password("oldpassword123", old_hash)
+    assert is_valid is True
+    assert needs_rehash is True  # Needs rehash to current iteration count
+
+    # Wrong password with old hash
+    is_valid, needs_rehash = verify_password("wrongpassword", old_hash)
+    assert is_valid is False
+    assert needs_rehash is False

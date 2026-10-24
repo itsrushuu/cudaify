@@ -23,6 +23,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from app.services import report, advisor  # noqa: E402
+
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
 st.set_page_config(
@@ -290,10 +292,10 @@ def _auth_headers():
 # ---------------------------------------------------------------------------
 STATUS_ORDER = ["generated", "ai_reviewed", "static_passed", "compiled", "runtime_tested", "benchmarked"]
 STATUS_LABELS = {
-    "generated": "Generated",
-    "ai_reviewed": "AI Reviewed",
-    "static_passed": "Static Passed",
-    "compiled": "Compiled",
+    "generated": "Generated (AI, unverified)",
+    "ai_reviewed": "AI Reviewed (not compiled)",
+    "static_passed": "Static Passed (not executed)",
+    "compiled": "Compiled (nvcc)",
     "runtime_tested": "Runtime Tested",
     "benchmarked": "Benchmarked",
 }
@@ -698,6 +700,13 @@ def main_app():
                 f"{_verification_badge(status)}  {_stage_progress(status)}",
                 unsafe_allow_html=True,
             )
+            # Clear disclaimer: AI review is NOT compilation or execution
+            if status in ("generated", "ai_reviewed", "static_passed"):
+                st.error(
+                    "⚠️ This code has NOT been compiled or executed. "
+                    f"Status '{STATUS_LABELS.get(status, status)}' means "
+                    "AI-assisted review only. Verify with nvcc before production use."
+                )
 
             ir_summary = res.get("ir_summary", "")
             if ir_summary:
@@ -748,6 +757,38 @@ def main_app():
 
                 with st.expander("⚠️ Limitations", expanded=False):
                     st.write(sections.get("LIMITATIONS", "None stated."))
+
+            # Report: trust ladder, diff, advisor
+            st.divider()
+            last_source = st.session_state.get("last_source", "")
+            advice_obj = advisor.analyze(last_source) if last_source else None
+            advice = advice_obj.to_dict() if advice_obj else None
+            report_md = report.build_report_markdown(last_source, res, advice)
+            st.markdown(report_md)
+
+            # Diff: translator vs fixer output
+            initial_kernel_code = report.initial_kernel(res.get("pipeline") or {})
+            if initial_kernel_code:
+                diff = report.unified_diff(initial_kernel_code, res.get("result", ""))
+                if diff:
+                    with st.expander("🔀 What the review/fix loop changed", expanded=False):
+                        st.code(diff, language="diff")
+
+            # Advisor: do you need custom CUDA?
+            if last_source and advice_obj:
+                icon = {"recommended": "✅", "consider-alternatives": "⚖️", "likely-unnecessary": "💡"}.get(
+                    advice_obj.cuda_verdict, "⚖️"
+                )
+                with st.expander(f"{icon} Do you actually need custom CUDA?", expanded=False):
+                    st.write(advice_obj.summary)
+                    for o in advice.get("options", []):
+                        st.markdown(f"**{o['name']}** _{o['fit']}_")
+                        for why in o.get("why", []):
+                            st.markdown(f"- {why}")
+                        if o.get("snippet"):
+                            st.code(o["snippet"], language="python")
+                        if o.get("note"):
+                            st.caption(o["note"])
 
             st.download_button(
                 "💾 Download full output (.txt)",

@@ -102,7 +102,7 @@ def test_run_pipeline_converges_first_review(monkeypatch):
 
     result = run_pipeline("def f(x): return x", translation_id=1)
     assert result.converged is True
-    assert result.final_status == "static_passed"
+    assert result.final_status == "ai_reviewed"
     assert result.final_cuda_code != ""
     assert len(result.agent_results) >= 2  # translator + reviewer (+ verifier)
 
@@ -362,7 +362,66 @@ def test_run_pipeline_reviewer_error_severity(monkeypatch):
     # Even though BLOCKING=no, the error severity should make it blocking
     # So fixer should run, then reviewer again, then verifier
     assert result.converged is True
-    assert result.final_status == "static_passed"
+    assert result.final_status == "ai_reviewed"
     # Should have fixer in the pipeline because error severity triggered blocking
     agents = [ar.agent for ar in result.agent_results]
     assert "fixer" in agents
+
+
+def test_run_pipeline_verifier_cannot_set_static_passed(monkeypatch):
+    """Verifier 'passed' verdict must NOT set static_passed — only ai_reviewed.
+    Static passed requires actual compilation (Phase 2).
+    """
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")
+
+    from app.services import agent_pipeline
+
+    def fake_call_agent(agent_role, system_prompt, user_content, iteration=0, model_override=None):
+        if agent_role == "translator":
+            return _make_agent_result(
+                "translator",
+                success=True,
+                content="CUDA KERNEL:\n```cpp\n__global__ void k() {}\n```\nHOST CODE:\n```cpp\nvoid launch() {}\n```\nEXPLANATION:\nSimple.",
+                sections={
+                    "CUDA KERNEL": "__global__ void k() {}",
+                    "HOST CODE": "void launch() {}",
+                    "EXPLANATION": "Simple.",
+                },
+                iteration=0,
+            )
+        if agent_role == "reviewer":
+            return _make_agent_result(
+                "reviewer",
+                success=True,
+                content="FINDINGS:\nNone.\nBLOCKING:\nno\nSUMMARY:\nLooks good.\nFIX_REQUIRED:\nno",
+                sections={
+                    "FINDINGS": "None.",
+                    "BLOCKING": "no",
+                    "SUMMARY": "Looks good.",
+                    "FIX_REQUIRED": "no",
+                },
+                iteration=iteration,
+            )
+        if agent_role == "verifier":
+            # Verifier says "passed" — but this must NOT set static_passed
+            return _make_agent_result(
+                "verifier",
+                success=True,
+                content="VERDICT:\npassed\nREMAINING_ISSUES:\nnone\nCONFIDENCE:\nhigh\nNOTES:\nAll good.",
+                sections={
+                    "VERDICT": "passed",
+                    "REMAINING_ISSUES": "none",
+                    "CONFIDENCE": "high",
+                    "NOTES": "All good.",
+                },
+                iteration=iteration,
+            )
+        return _make_agent_result(agent_role, success=False, error="unknown agent")
+
+    monkeypatch.setattr(agent_pipeline, "_call_agent", fake_call_agent)
+
+    result = run_pipeline("def f(x): return x", translation_id=1)
+    # Verifier approval only establishes AI review, not compilation
+    assert result.final_status == "ai_reviewed"
+    assert result.converged is True
+    assert "verifier" in [ar.agent for ar in result.agent_results]

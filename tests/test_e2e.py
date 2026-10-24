@@ -105,3 +105,35 @@ def test_history_endpoint(monkeypatch):
     data = r.json()
     assert isinstance(data, list)
     assert len(data) >= 1
+
+
+def test_cors_origins_parsing(monkeypatch):
+    """CORS_ALLOWED_ORIGINS is parsed correctly."""
+    from app.main import _parse_cors_origins
+
+    # No env var -> empty list (fail closed)
+    monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
+    assert _parse_cors_origins() == []
+
+    # Empty string -> empty list
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "")
+    assert _parse_cors_origins() == []
+
+    # Single origin
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://example.com")
+    assert _parse_cors_origins() == ["http://example.com"]
+
+    # Multiple origins
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://example.com, https://example.org")
+    assert _parse_cors_origins() == ["http://example.com", "https://example.org"]
+
+    # Wildcard
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "*")
+    assert _parse_cors_origins() == ["*"]
+
+
+def test_rate_limiter_configured():
+    """Rate limiter is configured on the FastAPI app."""
+    from app.rate_limit import limiter
+    from app.main import app
+    assert app.state.limiter is limiter
