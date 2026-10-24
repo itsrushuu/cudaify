@@ -72,6 +72,7 @@ st.markdown(
         margin-bottom: 2rem;
         color: white;
         box-shadow: 0 4px 16px rgba(118, 185, 0, 0.25);
+        overflow: hidden;
     }
     .main-header h1 {
         margin: 0;
@@ -196,6 +197,11 @@ st.markdown(
     .stTextArea textarea {
         font-family: "Consolas", "Monaco", "Courier New", monospace;
         font-size: 0.9rem;
+        color: var(--text) !important;
+    }
+    .stTextArea textarea::placeholder {
+        color: #6E7681 !important;
+        opacity: 1 !important;
     }
 
     .stMetric {
@@ -619,7 +625,6 @@ def main_app():
 
     # ---- Left: Input ----
     with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### 🐍 Python / NumPy Code")
 
         source = st.text_area(
@@ -679,11 +684,9 @@ def main_app():
                             st.error(r.json().get("detail", "Translation failed"))
                     except requests.exceptions.RequestException as exc:
                         st.error(f"Request failed: {exc}")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Right: Output ----
     with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### 🔧 CUDA Output")
 
         if st.session_state.last_result:
@@ -772,14 +775,23 @@ def main_app():
                     except requests.exceptions.RequestException as exc:
                         st.error(f"Review request failed: {exc}")
         else:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown(
                 '<div class="empty-state">'
                 '<h3>No translation yet</h3>'
                 '<p>Paste Python/NumPy code on the left and click <b>Translate to CUDA</b>.</p>'
+                '</div>'
                 '</div>',
                 unsafe_allow_html=True,
             )
-        st.markdown("</div>", unsafe_allow_html=True)
+            # Example quick-load buttons in empty state
+            st.markdown("**Try an example:**")
+            ex_cols = st.columns(2)
+            for i, (key, (name, _)) in enumerate(EXAMPLES.items()):
+                with ex_cols[i % 2]:
+                    if st.button(f"📄 {name}", key=f"ex_empty_{key}", use_container_width=True):
+                        _load_example(key)
+                        st.rerun()
 
     # ---- Review findings ----
     if st.session_state.review_result:
