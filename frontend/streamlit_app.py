@@ -1,19 +1,11 @@
-"""CUDAify Streamlit frontend — improved UI/UX.
+"""CUDAify Streamlit frontend — professional UI/UX.
 
-Pure Python UI: login/signup, code editor, structured CUDA translation output,
-copy-to-clipboard, download .cu files, translation history, verification status
-display, agentic pipeline visualization, and code review findings.
-
-Improvements over the original:
-- Custom CSS theme (NVIDIA-inspired green/dark palette)
-- Centered auth cards with validation
-- Example code quick-load buttons
-- Working copy-to-clipboard via st.code + st.button + session state toast
-- Progress badge showing verification stage
-- Visual agent pipeline flow with per-agent expanders
-- Searchable/filterable translation history
-- Better empty states and loading indicators
-- Responsive two-column layout with collapsible sections
+Clean, production-grade interface with:
+- NVIDIA-inspired green/dark theme
+- Two-column layout (Python input / CUDA output)
+- Agentic pipeline visualization
+- Copy-to-clipboard, download, verification badges
+- Searchable history, auth, example code loader
 """
 
 import json
@@ -41,7 +33,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Custom CSS theme
+# Custom CSS — professional dark theme
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -49,58 +41,76 @@ st.markdown(
     :root {
         --primary: #76B900;
         --primary-dark: #5C8A00;
-        --bg: #0E1117;
-        --card: #1A1C22;
-        --card-hover: #25272F;
-        --text: #E0E0E0;
-        --muted: #9CA3AF;
-        --border: #374151;
-        --success: #10B981;
-        --warning: #F59E0B;
-        --error: #EF4444;
-        --info: #3B82F6;
+        --bg: #0B0E11;
+        --card: #14181C;
+        --card-hover: #1E2329;
+        --border: #2A3138;
+        --text: #F0F2F5;
+        --muted: #8B949E;
+        --success: #3FB950;
+        --warning: #D29922;
+        --error: #F85149;
+        --info: #58A6FF;
     }
 
     .stApp {
         background-color: var(--bg);
+        color: var(--text);
     }
 
+    /* Hide Streamlit default chrome */
+    header[data-testid="stHeader"] { display: none !important; }
+    .stDeployButton { display: none !important; }
+    .stActionButton { display: none !important; }
+    [data-testid="stSidebarNav"] { display: none !important; }
+
+    /* Main header banner */
     .main-header {
         background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-        padding: 1.5rem 2rem;
+        padding: 1.75rem 2rem;
         border-radius: 12px;
-        margin-bottom: 1.5rem;
+        margin-bottom: 2rem;
         color: white;
+        box-shadow: 0 4px 16px rgba(118, 185, 0, 0.25);
     }
     .main-header h1 {
         margin: 0;
-        font-size: 2rem;
+        font-size: 1.75rem;
+        font-weight: 700;
         display: flex;
         align-items: center;
         gap: 0.75rem;
+        letter-spacing: -0.02em;
     }
     .main-header p {
         margin: 0.5rem 0 0;
         opacity: 0.9;
-        font-size: 1rem;
+        font-size: 0.95rem;
     }
 
+    /* Cards */
     .card {
         background: var(--card);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 1.25rem;
-        margin-bottom: 1rem;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
     }
 
-    .card-hover:hover {
-        border-color: var(--primary);
-        box-shadow: 0 4px 12px rgba(118, 185, 0, 0.15);
+    .auth-card {
+        max-width: 420px;
+        margin: 2rem auto;
+        padding: 2.5rem;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     }
 
+    /* Badges */
     .badge {
         display: inline-block;
-        padding: 4px 10px;
+        padding: 3px 10px;
         border-radius: 20px;
         font-size: 0.75rem;
         font-weight: 700;
@@ -111,80 +121,76 @@ st.markdown(
     .badge-generated { background: var(--warning); }
     .badge-ai_reviewed { background: var(--info); }
     .badge-static_passed { background: var(--success); }
-    .badge-compiled { background: #8B5CF6; }
-    .badge-runtime_tested { background: #06B6D4; }
-    .badge-benchmarked { background: #7C3AED; }
+    .badge-compiled { background: #A371F7; }
+    .badge-runtime_tested { background: #22D3EE; }
+    .badge-benchmarked { background: #B453F9; }
 
     .stage-progress {
         display: flex;
-        gap: 4px;
+        gap: 5px;
         margin: 8px 0;
     }
     .stage-dot {
-        width: 10px;
-        height: 10px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
     }
     .stage-dot.active { background: var(--primary); box-shadow: 0 0 8px var(--primary); }
     .stage-dot.done { background: var(--success); }
-    .stage-dot.pending { background: #374151; }
+    .stage-dot.pending { background: var(--border); }
 
-    .auth-card {
-        max-width: 400px;
-        margin: 2rem auto;
-        padding: 2rem;
-        background: var(--card);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    }
-
+    /* Empty state */
     .empty-state {
         text-align: center;
-        padding: 3rem 1rem;
+        padding: 3rem 1.5rem;
         color: var(--muted);
     }
     .empty-state h3 { margin: 0 0 0.5rem; color: var(--text); }
+    .empty-state p { margin: 0; font-size: 0.95rem; }
 
+    /* Findings */
     .finding {
         border-left: 3px solid;
         padding: 8px 12px;
         margin: 6px 0;
         background: rgba(255,255,255,0.03);
         border-radius: 0 6px 6px 0;
+        font-size: 0.9rem;
     }
     .finding-error { border-color: var(--error); }
     .finding-warning { border-color: var(--warning); }
     .finding-info { border-color: var(--info); }
 
-    .copy-btn {
-        background: var(--card);
-        border: 1px solid var(--border);
-        color: var(--text);
-        padding: 6px 12px;
+    /* Buttons */
+    .stButton button[kind="primary"] {
+        background: var(--primary);
+        border: none;
+        color: white;
+        font-weight: 600;
         border-radius: 6px;
-        font-size: 0.85rem;
-        cursor: pointer;
-        margin-top: 6px;
+        padding: 0.6rem 1.25rem;
     }
-    .copy-btn:hover { border-color: var(--primary); }
-
-    .example-btn {
-        background: var(--card);
-        border: 1px solid var(--border);
-        color: var(--muted);
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 0.85rem;
-        cursor: pointer;
-        text-align: left;
-        width: 100%;
-        margin-bottom: 6px;
+    .stButton button[kind="primary"]:hover {
+        background: var(--primary-dark);
     }
-    .example-btn:hover { border-color: var(--primary); color: white; }
 
-    div[data-testid="stMetricValue"] {
-        font-size: 1.5rem !important;
+    /* Form inputs */
+    .stTextInput input, .stTextArea textarea {
+        background: #0D1117 !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        border-radius: 6px !important;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 3px rgba(118, 185, 0, 0.15) !important;
+    }
+
+    .stSelectbox > div > div {
+        background: #0D1117 !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        border-radius: 6px !important;
     }
 
     .stTextArea textarea {
@@ -192,14 +198,11 @@ st.markdown(
         font-size: 0.9rem;
     }
 
-    .stButton button[kind="primary"] {
-        background: var(--primary);
-        border: none;
-        color: white;
-        font-weight: 600;
-    }
-    .stButton button[kind="primary"]:hover {
-        background: var(--primary-dark);
+    .stMetric {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1rem;
     }
 
     .toast {
@@ -216,6 +219,17 @@ st.markdown(
     @keyframes slideIn {
         from { transform: translateX(100%); opacity: 0; }
         to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: #0D1117 !important;
+        border-right: 1px solid var(--border) !important;
+    }
+
+    h1, h2, h3 {
+        color: var(--text) !important;
+        font-weight: 600;
     }
     </style>
     """,
@@ -234,11 +248,13 @@ if "last_result" not in st.session_state:
 if "review_result" not in st.session_state:
     st.session_state.review_result = None
 if "toast" not in st.session_state:
-    st.session_state.toast = None  # {"type": "success|error|info", "msg": str}
+    st.session_state.toast = None
 if "source_code" not in st.session_state:
     st.session_state.source_code = ""
 if "history_search" not in st.session_state:
     st.session_state.history_search = ""
+if "last_source" not in st.session_state:
+    st.session_state.last_source = ""
 
 
 def _toast(msg: str, kind: str = "info"):
@@ -249,11 +265,9 @@ def _render_toast():
     t = st.session_state.toast
     if not t:
         return
-    color = {"success": "#10B981", "error": "#EF4444", "info": "#3B82F6"}.get(t["kind"], "#3B82F6")
+    color = {"success": "#3FB950", "error": "#F85149", "info": "#58A6FF"}.get(t["kind"], "#58A6FF")
     st.markdown(
-        f"""
-        <div class="toast" style="background:{color};">{t["msg"]}</div>
-        """,
+        f'<div class="toast" style="background:{color};">{t["msg"]}</div>',
         unsafe_allow_html=True,
     )
     st.session_state.toast = None
@@ -278,17 +292,17 @@ STATUS_LABELS = {
     "benchmarked": "Benchmarked",
 }
 STATUS_COLORS = {
-    "generated": "#F59E0B",
-    "ai_reviewed": "#3B82F6",
-    "static_passed": "#10B981",
-    "compiled": "#8B5CF6",
-    "runtime_tested": "#06B6D4",
-    "benchmarked": "#7C3AED",
+    "generated": "#D29922",
+    "ai_reviewed": "#58A6FF",
+    "static_passed": "#3FB950",
+    "compiled": "#A371F7",
+    "runtime_tested": "#22D3EE",
+    "benchmarked": "#B453F9",
 }
 
 
 def _verification_badge(status: str):
-    color = STATUS_COLORS.get(status, "#9CA3AF")
+    color = STATUS_COLORS.get(status, "#8B949E")
     label = STATUS_LABELS.get(status, status)
     return f'<span class="badge badge-{status}">{label}</span>'
 
@@ -306,11 +320,6 @@ def _stage_progress(status: str):
 # Copy-to-clipboard
 # ---------------------------------------------------------------------------
 def _copy_button(text: str, key: str, label: str = "Copy"):
-    """Render a copy button that copies text via session state and shows a toast.
-
-    Note: st.code blocks already have a built-in copy button in Streamlit 1.37+.
-    This button provides an additional prominent copy action with feedback.
-    """
     if st.button(label, key=f"copy_{key}", help="Copy to clipboard"):
         st.session_state["_clipboard_" + key] = text
         _toast("Copied to clipboard!", "success")
@@ -371,7 +380,7 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Auth UI (centered cards)
+# Auth UI
 # ---------------------------------------------------------------------------
 def auth_ui():
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -464,13 +473,12 @@ def _render_pipeline(pipeline: Dict[str, Any]):
     with c3:
         st.metric("Converged", "Yes" if converged else "No")
 
-    # Flow diagram
     flow = '<div style="display:flex; align-items:center; gap:6px; margin:10px 0; flex-wrap:wrap;">'
     for i, ar in enumerate(agent_results):
         agent = ar.get("agent", "unknown")
         success = ar.get("success", False)
         label = AGENT_LABELS.get(agent, agent)
-        color = "#10B981" if success else "#EF4444"
+        color = "#3FB950" if success else "#F85149"
         flow += f'''
         <div style="text-align:center;">
             <div style="width:36px;height:36px;background:{color};border-radius:50%;
@@ -480,7 +488,7 @@ def _render_pipeline(pipeline: Dict[str, Any]):
         </div>
         '''
         if i < len(agent_results) - 1:
-            flow += '<div style="font-size:14px;color:#666;">▼</div>'
+            flow += '<div style="font-size:14px;color:#8B949E;">▼</div>'
     flow += "</div>"
     st.markdown(flow, unsafe_allow_html=True)
 
@@ -535,83 +543,11 @@ def _render_pipeline(pipeline: Dict[str, Any]):
 # Example code snippets
 # ---------------------------------------------------------------------------
 EXAMPLES = {
-    "vec_add": (
-        "Vector Addition",
-        "def vec_add(a, b, c, n):\n    for i in range(n):\n        c[i] = a[i] + b[i]\n",
-    ),
-    "array_sum": (
-        "Array Sum (Reduction)",
-        "def array_sum(a, n):\n    total = 0.0\n    for i in range(n):\n        total += a[i]\n    return total\n",
-    ),
-    "stencil_2d": (
-        "2D Stencil",
-        "def stencil_2d(input_arr, output, rows, cols):\n    for i in range(1, rows - 1):\n        for j in range(1, cols - 1):\n            output[i * cols + j] = (\n                input_arr[(i - 1) * cols + j]\n                + input_arr[(i + 1) * cols + j]\n                + input_arr[i * cols + (j - 1)]\n                + input_arr[i * cols + (j + 1)]\n            ) / 4.0\n    return output\n",
-    ),
-    "mat_mul": (
-        "Matrix Multiply",
-        "def mat_mul(A, B, C, n):\n    for i in range(n):\n        for j in range(n):\n            total = 0.0\n            for k in range(n):\n                total += A[i * n + k] * B[k * n + j]\n            C[i * n + j] = total\n",
-    ),
+    "vec_add": ("Vector Addition", "def vec_add(a, b, c, n):\n    for i in range(n):\n        c[i] = a[i] + b[i]\n"),
+    "array_sum": ("Array Sum (Reduction)", "def array_sum(a, n):\n    total = 0.0\n    for i in range(n):\n        total += a[i]\n    return total\n"),
+    "stencil_2d": ("2D Stencil", "def stencil_2d(input_arr, output, rows, cols):\n    for i in range(1, rows - 1):\n        for j in range(1, cols - 1):\n            output[i * cols + j] = (\n                input_arr[(i - 1) * cols + j]\n                + input_arr[(i + 1) * cols + j]\n                + input_arr[i * cols + (j - 1)]\n                + input_arr[i * cols + (j + 1)]\n            ) / 4.0\n    return output\n"),
+    "mat_mul": ("Matrix Multiply", "def mat_mul(A, B, C, n):\n    for i in range(n):\n        for j in range(n):\n            total = 0.0\n            for k in range(n):\n                total += A[i * n + k] * B[k * n + j]\n            C[i * n + j] = total\n"),
 }
-
-
-def _render_trust_summary(res: Dict[str, Any]):
-    """Status ladder + what is still unverified + which docs the Reviewer consulted."""
-    from app.services import report
-
-    status = res.get("verification_status", "generated")
-    with st.container(border=True):
-        st.markdown("#### 🛡️ Trust summary")
-        cols = st.columns(2)
-        for i, rung in enumerate(report.ladder_progress(status)):
-            cols[i % 2].markdown(f"{'✅' if rung['done'] else '⬜'} {rung['label']}")
-        todo = report.remaining_steps(status)
-        if todo:
-            st.markdown("**Still to do before you trust this kernel**")
-            for step in todo:
-                st.markdown(f"- {step}")
-        refs = (res.get("pipeline") or {}).get("references") or []
-        if refs:
-            st.markdown("**📚 The Reviewer consulted (NVIDIA docs via Tavily)**")
-            for r in refs:
-                st.markdown(f"- [{r.get('title') or r.get('url')}]({r.get('url')})")
-
-
-def _render_diff(res: Dict[str, Any]):
-    """Before/after view of what the review -> fix loop changed (only when the pipeline ran)."""
-    from app.services import report
-
-    pipeline = res.get("pipeline")
-    if not pipeline:
-        return
-    diff = report.unified_diff(report.initial_kernel(pipeline), pipeline.get("final_cuda_code", ""))
-    with st.expander("🔀 What the review/fix loop changed", expanded=bool(diff)):
-        if diff:
-            st.code(diff, language="diff")
-        else:
-            st.caption("The reviewer made no changes to the translator's draft.")
-
-
-def _render_advisor(source: str) -> Dict[str, Any]:
-    """'Do you actually need custom CUDA?' panel. Returns the advice dict (for the report)."""
-    from app.services import advisor
-
-    if not source:
-        return {}
-    adv = advisor.analyze(source).to_dict()
-    icon = {"recommended": "✅", "consider-alternatives": "⚖️", "likely-unnecessary": "💡"}.get(
-        adv["cuda_verdict"], "⚖️"
-    )
-    with st.expander(f"{icon} Do you actually need custom CUDA?", expanded=adv["cuda_verdict"] != "recommended"):
-        st.write(adv["summary"])
-        for o in adv["options"]:
-            st.markdown(f"**{o['name']}** · _{o['fit']}_")
-            for why in o["why"]:
-                st.markdown(f"- {why}")
-            if o.get("snippet"):
-                st.code(o["snippet"], language="python")
-            if o.get("note"):
-                st.caption(o["note"])
-    return adv
 
 
 def _load_example(key: str):
@@ -652,7 +588,6 @@ def main_app():
             value=True,
             help="Runs Translator → Reviewer → Fixer → Verifier loop for correctness.",
         )
-        # IDs below are real Nemotron models on Nebius Token Factory (see scripts/list_models.py).
         model_options = [
             "",
             "nvidia/Nemotron-3.5-Super-VL",
@@ -666,8 +601,7 @@ def main_app():
             options=model_options,
             index=0,
             format_func=lambda m: m or "Default (per-agent models from .env)",
-            help="Leave at default to use per-agent models from .env. "
-            "Pick one to force a single model for every agent.",
+            help="Leave at default to use per-agent models from .env.",
         )
 
         st.divider()
@@ -691,13 +625,12 @@ def main_app():
         source = st.text_area(
             "Code",
             value=st.session_state.source_code,
-            height=340,
+            height=420,
             placeholder="def vec_add(a, b, c, n):\n    for i in range(n):\n        c[i] = a[i] + b[i]\n",
             label_visibility="collapsed",
         )
         st.session_state.source_code = source
 
-        # Example quick-load buttons
         st.markdown("**Quick examples:**")
         ex_cols = st.columns(2)
         for i, (key, (name, _)) in enumerate(EXAMPLES.items()):
@@ -757,19 +690,15 @@ def main_app():
             res = st.session_state.last_result
             sections = res.get("sections", {})
 
-            # Status badge + stage progress
             status = res.get("verification_status", "generated")
             st.markdown(
                 f"{_verification_badge(status)}  {_stage_progress(status)}",
                 unsafe_allow_html=True,
             )
 
-            # IR summary
             ir_summary = res.get("ir_summary", "")
             if ir_summary:
                 st.caption(f"🔍 {ir_summary}")
-
-            _render_trust_summary(res)
 
             # Pipeline trace
             if res.get("pipeline"):
@@ -817,28 +746,6 @@ def main_app():
                 with st.expander("⚠️ Limitations", expanded=False):
                     st.write(sections.get("LIMITATIONS", "None stated."))
 
-            _render_diff(res)
-            last_source = st.session_state.get("last_source", "")
-            advice = _render_advisor(last_source)
-
-            from app.services import report as _report
-
-            report_data = res.get("pipeline") or {
-                "final_status": status,
-                "iterations": 0,
-                "converged": False,
-                "final_cuda_code": sections.get("CUDA KERNEL", ""),
-                "review_findings": [],
-                "agent_results": [],
-            }
-            st.download_button(
-                "📄 Download trust report (.md)",
-                data=_report.build_report_markdown(last_source, report_data, advice),
-                file_name=f"cudaify_report_{res['id']}.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
-
             st.download_button(
                 "💾 Download full output (.txt)",
                 data=res["result"],
@@ -866,8 +773,10 @@ def main_app():
                         st.error(f"Review request failed: {exc}")
         else:
             st.markdown(
-                '<div class="empty-state"><h3>No translation yet</h3>'
-                '<p>Paste Python/NumPy code on the left and click <b>Translate to CUDA</b>.</p></div>',
+                '<div class="empty-state">'
+                '<h3>No translation yet</h3>'
+                '<p>Paste Python/NumPy code on the left and click <b>Translate to CUDA</b>.</p>'
+                '</div>',
                 unsafe_allow_html=True,
             )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -890,7 +799,7 @@ def main_app():
         if findings:
             for f in findings:
                 sev = f.get("severity", "info")
-                color = {"error": "#EF4444", "warning": "#F59E0B", "info": "#3B82F6"}.get(sev, "#9CA3AF")
+                color = {"error": "#F85149", "warning": "#D29922", "info": "#58A6FF"}.get(sev, "#8B949E")
                 st.markdown(
                     f"""
                     <div class="finding finding-{sev}">
@@ -930,7 +839,6 @@ def main_app():
             timeout=10,
         )
         if hist_resp.status_code == 401:
-            # Session expired or server restarted (free hosts reset the database): re-login.
             st.session_state.token = None
             st.session_state.user = None
             st.session_state.last_result = None
@@ -941,7 +849,6 @@ def main_app():
         if not isinstance(hist, list):
             hist = []
 
-        # Apply search filter
         q = st.session_state.history_search.strip().lower()
         if q:
             hist = [
@@ -981,7 +888,7 @@ def main_app():
     # ---------- Disclaimer ----------
     st.divider()
     st.markdown(
-        '<div class="card" style="border-color: var(--border); background: rgba(234, 179, 8, 0.08);">'
+        '<div class="card" style="border-color: var(--border); background: rgba(210, 153, 34, 0.08);">'
         '⚠️ <strong>Disclaimer:</strong> Generated CUDA code is AI-assisted and has NOT been '
         'compiled or executed. Verify correctness, run static analysis, and benchmark before '
         'production use.'
