@@ -127,7 +127,7 @@ python scripts/list_models.py
 python scripts/check_setup.py
 
 # 5. Run (single process: the app starts its own backend when BACKEND_URL is not set)
-streamlit run frontend/streamlit_app.py
+streamlit run streamlit_app.py
 ```
 
 Open `http://localhost:8501`.
@@ -159,7 +159,7 @@ The Streamlit app runs its own backend, so you only need to deploy **one** servi
 
 **Streamlit Community Cloud** (simplest):
 1. Push to a public GitHub repo (the MIT `LICENSE` is at the root).
-2. On share.streamlit.io choose the repo and set the main file to `frontend/streamlit_app.py`.
+2. On share.streamlit.io choose the repo and set the main file to `streamlit_app.py`.
 3. Under *Advanced settings -> Secrets* add:
    ```toml
    NEBIUS_API_KEY = "your-key"
@@ -171,7 +171,7 @@ The Streamlit app runs its own backend, so you only need to deploy **one** servi
    login screen when that happens.
 
 **Render / Railway** (alternative): one Web Service with build `pip install -r requirements.txt` and start
-`streamlit run frontend/streamlit_app.py --server.port $PORT --server.address 0.0.0.0`. Do not set `BACKEND_URL`.
+`streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0`. Do not set `BACKEND_URL`.
 
 ## Demo video script (3 min)
 1. Problem: AI-written CUDA often looks right and isn't. How far can you trust it?

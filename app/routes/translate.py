@@ -36,6 +36,17 @@ security = HTTPBearer(auto_error=False)
 # Maximum source code size in characters
 MAX_SOURCE_LENGTH = 50_000
 
+# Verification statuses that a client may set via /verify without
+# server-side evidence. These are AI-assisted or base states only;
+# setting them does not claim that static analysis, compilation,
+# execution, or benchmarking was performed by the server.
+CLIENT_SETTABLE_VERIFICATION_STATUSES = {"generated"}
+
+# Verification statuses that imply actual server-side verification
+# was performed. A client cannot assign these through /verify until
+# the corresponding server-side check has been implemented (Phase 2).
+SERVER_VERIFIED_STATUSES = {"static_passed", "compiled", "runtime_tested", "benchmarked"}
+
 
 def get_current_user_id(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
@@ -254,13 +265,36 @@ def verify_translation(
 ):
     """Update the verification status of a translation.
 
-    Valid statuses: generated, ai_reviewed, static_passed, compiled,
-    runtime_tested, benchmarked.
+    Only 'generated' may be set by a client via this endpoint.
+    'ai_reviewed' is set exclusively by the /review endpoint after an
+    actual AI review runs. 'static_passed', 'compiled', 'runtime_tested',
+    and 'benchmarked' require server-side verification evidence that is
+    not yet implemented (Phase 2).
     """
     if verification_status not in VERIFICATION_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid verification status. Valid values: {', '.join(VERIFICATION_STATUSES)}",
+        )
+
+    if verification_status in SERVER_VERIFIED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Status '{verification_status}' requires server-side "
+                "verification evidence that is not yet implemented "
+                "(Phase 2). Only 'generated' can be set via this endpoint."
+            ),
+        )
+
+    if verification_status not in CLIENT_SETTABLE_VERIFICATION_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Status '{verification_status}' cannot be set via /verify. "
+                "Use /review for 'ai_reviewed' or server-side verification "
+                "endpoints for higher statuses (Phase 2)."
+            ),
         )
 
     row = get_translation(translation_id)

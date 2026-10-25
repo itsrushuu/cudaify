@@ -57,7 +57,7 @@ def check_project_structure():
         "app/routes/auth.py",
         "app/routes/translate.py",
         "app/routes/history.py",
-        "frontend/streamlit_app.py",
+        "streamlit_app.py",
         "requirements.txt",
         "README.md",
         "LICENSE",

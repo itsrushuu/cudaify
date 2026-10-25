@@ -66,7 +66,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\A
 pip install -r requirements.txt
 cp .env.example .env        # set NEBIUS_API_KEY (optional: TAVILY_API_KEY)
 python scripts/check_setup.py
-streamlit run frontend/streamlit_app.py
+streamlit run streamlit_app.py
 ```
 The app starts its own backend, so there is a single process to run and deploy.
 

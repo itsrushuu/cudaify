@@ -48,7 +48,7 @@ def git(*args):
 
 
 print("Files")
-for f in ("LICENSE", "README.md", "requirements.txt", ".env.example", "frontend/streamlit_app.py", "SUBMISSION.md"):
+for f in ("LICENSE", "README.md", "requirements.txt", ".env.example", "streamlit_app.py", "SUBMISSION.md"):
     ok(f) if os.path.exists(f) else fail(f"missing {f}")
 lic = read("LICENSE")
 ok("MIT license text present") if "MIT License" in lic and "Permission is hereby granted" in lic else fail("LICENSE is not the MIT text")
