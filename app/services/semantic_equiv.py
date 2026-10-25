@@ -380,7 +380,7 @@ def save_equivalence_result(
 
     if result.overall_passed and result.cuda_available:
         status = "runtime_tested"
-    elif result.passed_cases == result.total_cases:
+    elif result.passed_cases == result.total_cases and result.cuda_available:
         status = "static_passed"
     else:
         status = "generated"

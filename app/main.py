@@ -11,6 +11,7 @@ from slowapi import _rate_limit_exceeded_handler
 from app.rate_limit import limiter
 from app.models import init_db
 from app.routes import auth, translate, history
+from app.services.nemotron import is_configured, _get_ai_provider, _get_local_base_url, _get_local_model
 
 # Initialize database on import
 init_db()
@@ -57,10 +58,24 @@ def root():
     return {
         "status": "ok",
         "service": "cudaify",
-        "ai_configured": bool(os.getenv("NEBIUS_API_KEY")),
+        "ai_configured": is_configured(),
     }
 
 
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/health/provider")
+def provider_health():
+    """Report AI provider configuration status without exposing secrets."""
+    provider = _get_ai_provider()
+    configured = is_configured()
+    details = {"provider": provider, "configured": configured}
+    if provider == "local":
+        details["local_base_url"] = _get_local_base_url()
+        details["local_model_configured"] = bool(_get_local_model())
+    elif provider == "nebius":
+        details["api_key_configured"] = bool(os.getenv("NEBIUS_API_KEY"))
+    return details

@@ -14,7 +14,7 @@ individually and the verification pipeline can track each stage.
 import os
 import re
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import requests
 from dotenv import load_dotenv
 
@@ -119,6 +119,101 @@ _SECTION_RE = re.compile(
 _CODE_SECTIONS = {"CUDA KERNEL", "HOST CODE"}
 _FENCE_LINE_RE = re.compile(r"^\s*```[\w+-]*\s*$")
 
+# Python constructs that are explicitly unsupported for CUDA translation.
+# Patterns are kept simple to avoid regex backreference issues.
+_UNSUPPORTED_PYTHON = [
+    ("generator", r"\byield\b"),
+    ("class_definition", r"\bclass\s+\w+"),
+    ("decorator", r"@\w+"),
+    ("global_statement", r"\bglobal\b"),
+    ("nonlocal_statement", r"\bnonlocal\b"),
+    ("try_except", r"\btry\b"),
+    ("with_statement", r"\bwith\b"),
+    ("lambda", r"\blambda\b"),
+    ("list_comprehension", r"\[.*\bfor\b.*\bin\b.*\]"),
+    ("dict_comprehension", r"\{.*\bfor\b.*\bin\b.*\}"),
+    ("set_comprehension", r"\{.*\bfor\b.*\bin\b.*\}"),
+    ("eval_exec", r"\b(eval|exec)\s*\("),
+    ("dynamic_import", r"\b(import|from)\s+\w+\s+.*\bimport\b"),
+    ("getattr_setattr", r"\b(getattr|setattr|delattr)\s*\("),
+]
+
+
+def validate_python_input(source_code: str) -> Dict[str, Any]:
+    """Check Python source for constructs that cannot be reliably translated to CUDA.
+
+    Returns a dict with keys:
+      - "supported": bool - True if no unsupported constructs found
+      - "unsupported": list[str] - human-readable descriptions of issues
+      - "warnings": list[str] - non-blocking concerns
+    """
+    unsupported: List[str] = []
+    warnings: List[str] = []
+
+    # Check for unsupported constructs
+    for name, pattern in _UNSUPPORTED_PYTHON:
+        if re.search(pattern, source_code, re.IGNORECASE | re.MULTILINE):
+            unsupported.append(name)
+
+    # Check for missing function definition
+    if not re.search(r"\bdef\s+\w+", source_code):
+        unsupported.append("no_function_definition")
+
+    # Check for missing array/list usage (nothing to parallelize)
+    if not re.search(r"\b\w+\s*\[\s*", source_code):
+        warnings.append("no_array_access_detected")
+
+    return {
+        "supported": len(unsupported) == 0,
+        "unsupported": unsupported,
+        "warnings": warnings,
+    }
+
+
+def validate_cuda_output(cuda_code: str) -> Dict[str, Any]:
+    """Validate that generated CUDA C++ contains the minimal required structure.
+
+    Returns a dict with keys:
+      - "valid": bool - True if output looks like real CUDA code
+      - "issues": list[str] - problems found
+      - "has_kernel": bool - contains __global__ kernel
+      - "has_launch": bool - contains kernel launch (<<< >>>)
+      - "has_host": bool - contains host wrapper function
+    """
+    issues: List[str] = []
+    lower = cuda_code.lower()
+
+    has_kernel = "__global__" in lower
+    has_launch = "<<<" in cuda_code
+    has_host = "void " in lower or "cuda" in lower
+    has_sync = "devicesynchronize" in lower
+    has_error_check = "cudagetterror" in lower or "cudasuccess" in lower
+    has_bounds = "if (" in lower and ("<" in lower or "<=" in lower)
+
+    if not has_kernel:
+        issues.append("No __global__ kernel function found")
+    if not has_launch:
+        issues.append("No kernel launch configuration (<<< >>>) found")
+    if not has_host:
+        issues.append("No host wrapper function found")
+    if not has_sync:
+        issues.append("No cudaDeviceSynchronize() after kernel launch")
+    if not has_error_check:
+        issues.append("No CUDA error checking (cudaGetLastError / cudaSuccess)")
+    if not has_bounds:
+        issues.append("No bounds guarding (if (idx < n)) detected")
+
+    return {
+        "valid": has_kernel and has_launch and has_host,
+        "issues": issues,
+        "has_kernel": has_kernel,
+        "has_launch": has_launch,
+        "has_host": has_host,
+        "has_sync": has_sync,
+        "has_error_check": has_error_check,
+        "has_bounds": has_bounds,
+    }
+
 
 def strip_code_fences(text: str) -> str:
     """Remove markdown ``` fence lines so the result is compilable source."""
@@ -181,8 +276,9 @@ def chat_completion(
         api_key = os.getenv("NEBIUS_API_KEY")
         if not api_key:
             raise NemotronError(
-                "NEBIUS_API_KEY is not configured. "
-                "Copy .env.example to .env and set your Nebius Token Factory API key.",
+                "AI provider not configured. "
+                "Set NEBIUS_API_KEY in .env for the nebius provider, "
+                "or switch AI_PROVIDER to local.",
                 retryable=False,
             )
         headers = {
@@ -190,21 +286,23 @@ def chat_completion(
             "Content-Type": "application/json",
         }
         url = f"{NEBIUS_BASE_URL}/chat/completions"
+        provider_name = "Nebius Token Factory"
     elif provider == "local":
         api_key = _get_local_api_key()
+        local_model = _get_local_model()
+        if not local_model:
+            raise NemotronError(
+                "LOCAL_MODEL is not configured. "
+                "Set LOCAL_MODEL in .env for the local AI provider.",
+                retryable=False,
+            )
+        model = local_model
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         url = f"{_get_local_base_url()}/chat/completions"
-        if not model:
-            model = _get_local_model()
-            if not model:
-                raise NemotronError(
-                    "LOCAL_MODEL is not configured. "
-                    "Set LOCAL_MODEL in .env for local AI provider.",
-                    retryable=False,
-                )
+        provider_name = "local AI provider"
     else:
         raise NemotronError(
             f"Unknown AI provider '{provider}'. Valid values: nebius, local",
@@ -235,7 +333,7 @@ def chat_completion(
                 pass
             status = exc.response.status_code if exc.response else None
             last_error = (
-                f"Nebius Token Factory request failed ({model}): {exc} {body}".strip()
+                f"{provider_name} request failed ({model}): {exc} {body}".strip()
             )
             if status == 401:
                 raise NemotronError(last_error, retryable=False, status_code=401) from exc
@@ -246,13 +344,13 @@ def chat_completion(
                 continue
             raise NemotronError(last_error, retryable=True, status_code=status) from exc
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-            last_error = f"Nebius Token Factory request failed: {exc}"
+            last_error = f"{provider_name} request failed: {exc}"
             if attempt < max_retries:
                 time.sleep(retry_delay * (attempt + 1))
                 continue
             raise NemotronError(last_error, retryable=True) from exc
         except ValueError as exc:
-            raise NemotronError(f"Token Factory returned invalid JSON: {exc}") from exc
+            raise NemotronError(f"{provider_name} returned invalid JSON: {exc}") from exc
 
     try:
         choice = data["choices"][0]
@@ -275,13 +373,13 @@ def chat_completion(
 def is_configured() -> bool:
     """Return True if the configured AI provider is ready (checked at call time).
 
-    Nebius mode requires NEBIUS_API_KEY. Local mode does not require a real
-    API key. An unknown provider is treated as not configured.
+    Nebius mode requires NEBIUS_API_KEY. Local mode requires LOCAL_MODEL.
+    An unknown provider is treated as not configured.
     """
     if _get_ai_provider() == "nebius":
         return bool(os.getenv("NEBIUS_API_KEY"))
     if _get_ai_provider() == "local":
-        return True
+        return bool(_get_local_model())
     return False
 
 
@@ -394,11 +492,26 @@ def translate_to_cuda(
         model: Optional model override (defaults to NEBIUS_MODEL env var).
 
     Returns:
-        Dict with keys: success, content, model, sections, or error.
+        Dict with keys: success, content, model, sections, validation, confidence,
+        or error.
         When successful, 'sections' contains the parsed named sections.
+        'validation' contains CUDA output validation results.
+        'confidence' is a float 0.0-1.0 estimating translation reliability.
     """
     if not source_code or not source_code.strip():
         return {"error": "Source code cannot be empty."}
+
+    # --- Validate Python input before sending to AI ---
+    input_validation = validate_python_input(source_code)
+    if not input_validation["supported"]:
+        return {
+            "error": (
+                f"Source code contains unsupported constructs: "
+                f"{', '.join(input_validation['unsupported'])}. "
+                "CUDAify cannot reliably translate these patterns."
+            ),
+            "input_validation": input_validation,
+        }
 
     model = model or model_for("translator")
 
@@ -411,9 +524,34 @@ def translate_to_cuda(
         )
     except NemotronError as exc:
         return {"error": str(exc)}
+
+    sections = _parse_sections(content)
+
+    # --- Validate CUDA output ---
+    cuda_validation = validate_cuda_output(content)
+
+    # Compute confidence: starts at 1.0, penalizes for missing sections and issues
+    confidence = 1.0
+    if not sections.get("CUDA KERNEL"):
+        confidence -= 0.4
+    if not sections.get("HOST CODE"):
+        confidence -= 0.3
+    if not sections.get("EXPLANATION"):
+        confidence -= 0.1
+    confidence -= len(cuda_validation["issues"]) * 0.05
+    confidence = max(0.0, min(1.0, round(confidence, 2)))
+
+    # Check for preamble content (AI added chatter before first section)
+    if sections.get("preamble"):
+        confidence -= 0.1
+        confidence = max(0.0, confidence)
+
     return {
         "success": True,
         "content": content,
         "model": model,
-        "sections": _parse_sections(content),
+        "sections": sections,
+        "validation": cuda_validation,
+        "confidence": confidence,
+        "input_validation": input_validation,
     }

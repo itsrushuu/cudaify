@@ -220,10 +220,19 @@ def test_model_for_nebius_unchanged_in_local_mode(monkeypatch):
 
 
 def test_is_configured_local_without_nebius_key(monkeypatch):
-    """Local mode is configured even without NEBIUS_API_KEY."""
+    """Local mode is configured even without NEBIUS_API_KEY when LOCAL_MODEL is set."""
     monkeypatch.setenv("AI_PROVIDER", "local")
     monkeypatch.setenv("NEBIUS_API_KEY", "")
+    monkeypatch.setenv("LOCAL_MODEL", "qwen2.5-coder-3b")
     assert nemotron.is_configured() is True
+
+
+def test_is_configured_local_without_local_model(monkeypatch):
+    """Local mode is NOT configured without LOCAL_MODEL."""
+    monkeypatch.setenv("AI_PROVIDER", "local")
+    monkeypatch.setenv("NEBIUS_API_KEY", "")
+    monkeypatch.setenv("LOCAL_MODEL", "")
+    assert nemotron.is_configured() is False
 
 
 def test_is_configured_nebius_requires_key(monkeypatch):

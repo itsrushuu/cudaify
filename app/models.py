@@ -60,6 +60,7 @@ def init_db() -> None:
                 explanation TEXT,
                 model_used TEXT,
                 verification_status TEXT NOT NULL DEFAULT 'generated',
+                verification_evidence TEXT,
                 review_findings TEXT,
                 sections_json TEXT,
                 ir_json TEXT,
@@ -86,6 +87,10 @@ def init_db() -> None:
         if not _column_exists(conn, "translations", "verification_status"):
             conn.execute(
                 "ALTER TABLE translations ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'generated'"
+            )
+        if not _column_exists(conn, "translations", "verification_evidence"):
+            conn.execute(
+                "ALTER TABLE translations ADD COLUMN verification_evidence TEXT"
             )
         if not _column_exists(conn, "translations", "review_findings"):
             conn.execute(
@@ -232,6 +237,7 @@ def save_translation(
     explanation: Optional[str],
     model_used: str,
     verification_status: str = "generated",
+    verification_evidence: Optional[str] = None,
     review_findings: Optional[str] = None,
     sections_json: Optional[str] = None,
     ir_json: Optional[str] = None,
@@ -247,10 +253,10 @@ def save_translation(
             """
             INSERT INTO translations
                 (user_id, source_code, cuda_code, explanation, model_used,
-                 verification_status, review_findings, sections_json,
+                 verification_status, verification_evidence, review_findings, sections_json,
                  ir_json, ir_cuda_match_score,
                  pipeline_iterations, agent_results_json, pipeline_converged, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -259,6 +265,7 @@ def save_translation(
                 explanation,
                 model_used,
                 verification_status,
+                verification_evidence,
                 review_findings,
                 sections_json,
                 ir_json,
@@ -281,6 +288,7 @@ def update_pipeline(
     agent_results_json: str,
     pipeline_converged: int,
     verification_status: str,
+    verification_evidence: Optional[str] = None,
     review_findings: Optional[str] = None,
     ir_json: Optional[str] = None,
     ir_cuda_match_score: Optional[float] = None,
@@ -301,6 +309,7 @@ def update_pipeline(
                 agent_results_json = ?,
                 pipeline_converged = ?,
                 verification_status = ?,
+                verification_evidence = ?,
                 review_findings = ?,
                 ir_json = ?,
                 ir_cuda_match_score = ?
@@ -311,6 +320,7 @@ def update_pipeline(
                 agent_results_json,
                 pipeline_converged,
                 verification_status,
+                verification_evidence,
                 review_findings,
                 ir_json,
                 ir_cuda_match_score,
@@ -327,6 +337,7 @@ def update_verification(
     translation_id: int,
     verification_status: str,
     review_findings: Optional[str] = None,
+    verification_evidence: Optional[str] = None,
 ) -> bool:
     """Update the verification status of an existing translation.
 
@@ -340,10 +351,10 @@ def update_verification(
         cur = conn.execute(
             """
             UPDATE translations
-            SET verification_status = ?, review_findings = ?
+            SET verification_status = ?, verification_evidence = ?, review_findings = ?
             WHERE id = ?
             """,
-            (verification_status, review_findings, translation_id),
+            (verification_status, verification_evidence, review_findings, translation_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -389,6 +400,7 @@ def translation_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "explanation": row["explanation"],
         "model_used": row["model_used"],
         "verification_status": row["verification_status"],
+        "verification_evidence": row["verification_evidence"],
         "review_findings": row["review_findings"],
         "sections_json": row["sections_json"],
         "ir_json": row["ir_json"],

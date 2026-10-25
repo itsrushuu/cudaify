@@ -28,6 +28,53 @@ CUDAify addresses this with:
 4. Results are saved to SQLite history with verification status, IR analysis, and auto-tuning recommendations.
 5. The frontend shows CUDA kernel/host code, review findings, pipeline trace, and a disclaimer when code has not been compiled or executed.
 
+## Input and Output Validation
+
+Before sending code to the AI provider, CUDAify checks the Python source for
+constructs that cannot be reliably translated (generators, classes, decorators,
+`eval`/`exec`, dynamic imports, etc.). Unsupported code is rejected with a clear
+message instead of producing speculative output.
+
+After receiving CUDA code from the AI, the backend validates that the output
+contains the minimum required structure:
+
+- `__global__` kernel function
+- Kernel launch configuration (`<<< >>>`)
+- Host wrapper function
+- Bounds guarding (`if (idx < n)`)
+- `cudaDeviceSynchronize()` after kernel launch
+- CUDA error checking (`cudaGetLastError` / `cudaSuccess`)
+
+A confidence score (0.0–1.0) is returned with every translation, reflecting
+missing sections and detected issues. Translations with low confidence are
+clearly flagged as unverified.
+
+## Provider Health Check
+
+`GET /health/provider` reports the AI provider configuration status without
+exposing secrets:
+
+- Provider in use (`nebius` or `local`)
+- Whether the provider is configured
+- For local mode: base URL and whether `LOCAL_MODEL` is set
+- For nebius mode: whether `NEBIUS_API_KEY` is set
+
+## Verification Evidence
+
+Every translation record stores a `verification_evidence` field describing how
+the verification status was established:
+
+- `agentic_pipeline` — Went through Translator → Reviewer → Fixer → Verifier loop
+- `single_shot_translation` — Single-shot translation, no review performed
+- `static_review` — AI static code review completed
+- `equivalence_testing` — Semantic equivalence tests executed
+
+The `/verify` endpoint only allows setting status to `generated`. Higher
+statuses (`ai_reviewed`, `static_passed`, `compiled`, `runtime_tested`,
+`benchmarked`) can only be set by server-side verification operations that
+produce corresponding evidence.
+
+
 ## Tech Stack
 
 | Layer | Technology |
