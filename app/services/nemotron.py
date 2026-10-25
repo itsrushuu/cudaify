@@ -38,8 +38,30 @@ _ROLE_ENV = {
 }
 
 
+def _get_ai_provider() -> str:
+    """Read AI_PROVIDER at call time so tests can monkeypatch env vars."""
+    return os.getenv("AI_PROVIDER", "nebius").strip().lower()
+
+
+def _get_local_base_url() -> str:
+    """Read LOCAL_BASE_URL at call time."""
+    return os.getenv("LOCAL_BASE_URL", "http://localhost:1235/v1").rstrip("/")
+
+
+def _get_local_model() -> str:
+    """Read LOCAL_MODEL at call time."""
+    return os.getenv("LOCAL_MODEL", "").strip()
+
+
+def _get_local_api_key() -> str:
+    """Read LOCAL_API_KEY at call time (placeholder; never requires a real key)."""
+    return os.getenv("LOCAL_API_KEY", "lm-studio")
+
+
 def model_for(role: str) -> str:
     """Resolve the model ID for an agent role from the environment (read at call time)."""
+    if _get_ai_provider() == "local":
+        return _get_local_model() or DEFAULT_MODEL
     return (
         os.getenv(_ROLE_ENV.get(role, ""), "").strip()
         or os.getenv("NEBIUS_MODEL", "").strip()
@@ -153,18 +175,41 @@ def chat_completion(
     Retries on transient failures (429, 5xx, network errors) with exponential backoff.
     Does NOT retry on authentication errors (401) or client errors (4xx other than 429).
     """
-    api_key = os.getenv("NEBIUS_API_KEY")
-    if not api_key:
+    provider = _get_ai_provider()
+
+    if provider == "nebius":
+        api_key = os.getenv("NEBIUS_API_KEY")
+        if not api_key:
+            raise NemotronError(
+                "NEBIUS_API_KEY is not configured. "
+                "Copy .env.example to .env and set your Nebius Token Factory API key.",
+                retryable=False,
+            )
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{NEBIUS_BASE_URL}/chat/completions"
+    elif provider == "local":
+        api_key = _get_local_api_key()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{_get_local_base_url()}/chat/completions"
+        if not model:
+            model = _get_local_model()
+            if not model:
+                raise NemotronError(
+                    "LOCAL_MODEL is not configured. "
+                    "Set LOCAL_MODEL in .env for local AI provider.",
+                    retryable=False,
+                )
+    else:
         raise NemotronError(
-            "NEBIUS_API_KEY is not configured. "
-            "Copy .env.example to .env and set your Nebius Token Factory API key.",
+            f"Unknown AI provider '{provider}'. Valid values: nebius, local",
             retryable=False,
         )
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    url = f"{NEBIUS_BASE_URL}/chat/completions"
     payload = {
         "model": model,
         "messages": [
@@ -228,8 +273,16 @@ def chat_completion(
 
 
 def is_configured() -> bool:
-    """Return True if the API key is present (checked at call time)."""
-    return bool(os.getenv("NEBIUS_API_KEY"))
+    """Return True if the configured AI provider is ready (checked at call time).
+
+    Nebius mode requires NEBIUS_API_KEY. Local mode does not require a real
+    API key. An unknown provider is treated as not configured.
+    """
+    if _get_ai_provider() == "nebius":
+        return bool(os.getenv("NEBIUS_API_KEY"))
+    if _get_ai_provider() == "local":
+        return True
+    return False
 
 
 SYSTEM_PROMPT = """You are an expert CUDA programmer and correctness reviewer.

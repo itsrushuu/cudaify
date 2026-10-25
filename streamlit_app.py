@@ -24,6 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from app.services import report, advisor  # noqa: E402
+from app.services.nemotron import is_configured, _get_ai_provider, _get_local_base_url, _get_local_model  # noqa: E402
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
@@ -381,7 +382,8 @@ st.markdown(
     <div class="main-header">
         <h1>⚡ CUDAify</h1>
         <p>Agentic self-healing Python/NumPy → CUDA translation using
-        <strong>NVIDIA Nemotron</strong> on <strong>Nebius Token Factory</strong></p>
+        <strong>NVIDIA Nemotron</strong> via <strong>Nebius Token Factory</strong>
+        or a local <strong>LM Studio</strong> endpoint</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -596,20 +598,29 @@ def main_app():
             value=True,
             help="Runs Translator → Reviewer → Fixer → Verifier loop for correctness.",
         )
-        model_options = [
-            "",
-            "nvidia/Nemotron-3.5-Super-VL",
-            "nvidia/nemotron-3-super-120b-a12b",
-            "nvidia/Nemotron-3-Ultra-550b-a55b",
-            "nvidia/Nemotron-3_5-Lightning",
-            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
-        ]
+
+        provider = _get_ai_provider()
+        if provider == "local":
+            model_options = ["", _get_local_model() or "qwen2.5-coder-3b-instruct"]
+            model_label = "Local model (optional)"
+            model_help = "Leave at default to use LOCAL_MODEL from .env."
+        else:
+            model_options = [
+                "",
+                "nvidia/Nemotron-3.5-Super-VL",
+                "nvidia/nemotron-3-super-120b-a12b",
+                "nvidia/Nemotron-3-Ultra-550b-a55b",
+                "nvidia/Nemotron-3_5-Lightning",
+                "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+            ]
+            model_label = "Nemotron model (optional)"
+            model_help = "Leave at default to use per-agent models from .env."
         model = st.selectbox(
-            "Nemotron model (optional)",
+            model_label,
             options=model_options,
             index=0,
             format_func=lambda m: m or "Default (per-agent models from .env)",
-            help="Leave at default to use per-agent models from .env.",
+            help=model_help,
         )
 
         st.divider()
@@ -621,6 +632,24 @@ def main_app():
         st.divider()
         st.markdown("### 🔄 Pipeline Mode")
         st.caption("Agentic self-healing: Translate → Review → Fix → Verify")
+
+        st.divider()
+        st.markdown("### 🤖 AI Provider")
+        provider = _get_ai_provider()
+        if provider == "local":
+            local_model = _get_local_model() or "(default)"
+            st.info(
+                f"Provider: **Local (LM Studio)**\n"
+                f"Endpoint: `{_get_local_base_url()}`\n"
+                f"Model: `{local_model}`"
+            )
+        else:
+            st.info(
+                "Provider: **Nebius Token Factory**\n"
+                "Endpoint: Remote (NVIDIA Nemotron)\n"
+                "API key: configured" if is_configured() else "API key: not configured"
+            )
+        st.caption("Set AI_PROVIDER in .env to switch providers.")
 
     # ---------- Main content ----------
     col1, col2 = st.columns([1, 1], gap="large")
