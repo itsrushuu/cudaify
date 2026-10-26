@@ -11,6 +11,7 @@ the raw text into named sections so the frontend can display them
 individually and the verification pipeline can track each stage.
 """
 
+import ast
 import os
 import re
 import time
@@ -120,53 +121,175 @@ _CODE_SECTIONS = {"CUDA KERNEL", "HOST CODE"}
 _FENCE_LINE_RE = re.compile(r"^\s*```[\w+-]*\s*$")
 
 # Python constructs that are explicitly unsupported for CUDA translation.
-# Patterns are kept simple to avoid regex backreference issues.
-_UNSUPPORTED_PYTHON = [
-    ("generator", r"\byield\b"),
-    ("class_definition", r"\bclass\s+\w+"),
-    ("decorator", r"@\w+"),
-    ("global_statement", r"\bglobal\b"),
-    ("nonlocal_statement", r"\bnonlocal\b"),
-    ("try_except", r"\btry\b"),
-    ("with_statement", r"\bwith\b"),
-    ("lambda", r"\blambda\b"),
-    ("list_comprehension", r"\[.*\bfor\b.*\bin\b.*\]"),
-    ("dict_comprehension", r"\{.*\bfor\b.*\bin\b.*\}"),
-    ("set_comprehension", r"\{.*\bfor\b.*\bin\b.*\}"),
-    ("eval_exec", r"\b(eval|exec)\s*\("),
-    ("dynamic_import", r"\b(import|from)\s+\w+\s+.*\bimport\b"),
-    ("getattr_setattr", r"\b(getattr|setattr|delattr)\s*\("),
-]
+# These are detected via AST analysis in validate_python_input().
+_UNSUPPORTED_CONSTRUCTS = (
+    "yield",
+    "class",
+    "decorator",
+    "global",
+    "nonlocal",
+    "try_except",
+    "with_statement",
+    "lambda",
+    "eval_exec",
+    "dynamic_import",
+    "getattr_setattr",
+)
+
+
+def _analyze_python_ast(source_code: str) -> Dict[str, Any]:
+    """Parse Python source with the ast module and inspect supported constructs.
+
+    Returns a dict with keys:
+      - "syntax_valid": bool - True if source parses without SyntaxError
+      - "syntax_error": Optional[str] - human-readable syntax error message
+      - "functions": list[str] - names of top-level function definitions
+      - "array_accesses": list[str] - names of arrays accessed via subscript
+      - "unsupported_constructs": list[str] - construct names found
+      - "warnings": list[str] - non-blocking concerns
+    """
+    result: Dict[str, Any] = {
+        "syntax_valid": False,
+        "syntax_error": None,
+        "functions": [],
+        "array_accesses": [],
+        "unsupported_constructs": [],
+        "warnings": [],
+    }
+
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError as exc:
+        result["syntax_error"] = (
+            f"Syntax error at line {exc.lineno}, column {exc.offset}: {exc.msg}"
+        )
+        return result
+
+    result["syntax_valid"] = True
+
+    # Collect top-level function definitions
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.FunctionDef):
+            result["functions"].append(node.name)
+
+    # Collect array subscript accesses
+    class SubscriptVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.accesses: List[str] = []
+
+        def visit_Subscript(self, node: ast.Subscript):
+            if isinstance(node.value, ast.Name):
+                self.accesses.append(node.value.id)
+            self.generic_visit(node)
+
+    visitor = SubscriptVisitor()
+    visitor.visit(tree)
+    result["array_accesses"] = sorted(set(visitor.accesses))
+
+    # Check for unsupported constructs via AST
+    class UnsupportedVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.found: List[str] = []
+
+        def visit_Yield(self, node):
+            self.found.append("yield")
+            self.generic_visit(node)
+
+        def visit_ClassDef(self, node):
+            self.found.append("class_definition")
+            self.generic_visit(node)
+
+        def visit_Global(self, node):
+            self.found.append("global_statement")
+            self.generic_visit(node)
+
+        def visit_Nonlocal(self, node):
+            self.found.append("nonlocal_statement")
+            self.generic_visit(node)
+
+        def visit_Try(self, node):
+            self.found.append("try_except")
+            self.generic_visit(node)
+
+        def visit_With(self, node):
+            self.found.append("with_statement")
+            self.generic_visit(node)
+
+        def visit_Lambda(self, node):
+            self.found.append("lambda")
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):
+            # Check for decorators on the function
+            if node.decorator_list:
+                self.found.append("decorator")
+            self.generic_visit(node)
+
+        def visit_Call(self, node):
+            # eval/exec calls
+            if isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec"):
+                self.found.append("eval_exec")
+            # getattr/setattr/delattr calls
+            if isinstance(node.func, ast.Name) and node.func.id in (
+                "getattr",
+                "setattr",
+                "delattr",
+            ):
+                self.found.append("getattr_setattr")
+            self.generic_visit(node)
+
+        def visit_Import(self, node):
+            self.found.append("dynamic_import")
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            self.found.append("dynamic_import")
+            self.generic_visit(node)
+
+    unsat_visitor = UnsupportedVisitor()
+    unsat_visitor.visit(tree)
+    result["unsupported_constructs"] = sorted(set(unsat_visitor.found))
+
+    # Check for missing function definition
+    if not result["functions"]:
+        result["unsupported_constructs"].append("no_function_definition")
+
+    # Check for missing array/list usage (nothing to parallelize)
+    if not result["array_accesses"]:
+        result["warnings"].append("no_array_access_detected")
+
+    return result
 
 
 def validate_python_input(source_code: str) -> Dict[str, Any]:
     """Check Python source for constructs that cannot be reliably translated to CUDA.
 
-    Returns a dict with keys:
-      - "supported": bool - True if no unsupported constructs found
+    Uses AST analysis for syntax-aware inspection rather than brittle regex
+    matching. Returns a dict with keys:
+      - "supported": bool - True if no unsupported constructs found and syntax valid
       - "unsupported": list[str] - human-readable descriptions of issues
       - "warnings": list[str] - non-blocking concerns
+      - "syntax_valid": bool - whether Python source parses successfully
+      - "syntax_error": Optional[str] - syntax error message if any
+      - "functions": list[str] - detected top-level function names
+      - "array_accesses": list[str] - detected array names accessed via subscript
     """
-    unsupported: List[str] = []
-    warnings: List[str] = []
+    ast_result = _analyze_python_ast(source_code)
 
-    # Check for unsupported constructs
-    for name, pattern in _UNSUPPORTED_PYTHON:
-        if re.search(pattern, source_code, re.IGNORECASE | re.MULTILINE):
-            unsupported.append(name)
+    unsupported: List[str] = list(ast_result["unsupported_constructs"])
+    warnings: List[str] = list(ast_result["warnings"])
 
-    # Check for missing function definition
-    if not re.search(r"\bdef\s+\w+", source_code):
-        unsupported.append("no_function_definition")
-
-    # Check for missing array/list usage (nothing to parallelize)
-    if not re.search(r"\b\w+\s*\[\s*", source_code):
-        warnings.append("no_array_access_detected")
+    if not ast_result["syntax_valid"]:
+        unsupported.append("invalid_python_syntax")
 
     return {
-        "supported": len(unsupported) == 0,
+        "supported": ast_result["syntax_valid"] and len(unsupported) == 0,
         "unsupported": unsupported,
         "warnings": warnings,
+        "syntax_valid": ast_result["syntax_valid"],
+        "syntax_error": ast_result.get("syntax_error"),
+        "functions": ast_result["functions"],
+        "array_accesses": ast_result["array_accesses"],
     }
 
 
@@ -179,16 +302,44 @@ def validate_cuda_output(cuda_code: str) -> Dict[str, Any]:
       - "has_kernel": bool - contains __global__ kernel
       - "has_launch": bool - contains kernel launch (<<< >>>)
       - "has_host": bool - contains host wrapper function
+      - "has_memory_ops": bool - contains cudaMalloc/cudaMemcpy/cudaFree
+      - "has_sync": bool - contains cudaDeviceSynchronize()
+      - "has_error_check": bool - contains cudaGetLastError / cudaSuccess
+      - "has_bounds": bool - contains bounds guarding (if (idx < n))
+      - "validation_level": str - "none", "structural", or "full"
     """
     issues: List[str] = []
+    if not cuda_code or not cuda_code.strip():
+        issues.append("Empty CUDA code")
+        return {
+            "valid": False,
+            "issues": issues,
+            "has_kernel": False,
+            "has_launch": False,
+            "has_host": False,
+            "has_memory_ops": False,
+            "has_sync": False,
+            "has_error_check": False,
+            "has_bounds": False,
+            "validation_level": "none",
+        }
+
     lower = cuda_code.lower()
 
     has_kernel = "__global__" in lower
     has_launch = "<<<" in cuda_code
-    has_host = "void " in lower or "cuda" in lower
+    has_memory_ops = any(
+        op in lower for op in ("cudamalloc", "cudamemcpy", "cudafree")
+    )
+    # Host wrapper: a non-kernel function declaration (void return, not __global__)
+    has_host = bool(
+        re.search(r"\bvoid\s+\w+\s*\(", cuda_code) and not has_kernel
+    ) or bool(re.search(r"\bvoid\s+\w+\s*\(", cuda_code))
     has_sync = "devicesynchronize" in lower
-    has_error_check = "cudagetterror" in lower or "cudasuccess" in lower
-    has_bounds = "if (" in lower and ("<" in lower or "<=" in lower)
+    has_error_check = "getlasterror" in lower or "cudasuccess" in lower
+    has_bounds = bool(
+        re.search(r"\bif\s*\(\s*\w+\s*<\s*\w+\)", cuda_code)
+    )
 
     if not has_kernel:
         issues.append("No __global__ kernel function found")
@@ -196,6 +347,8 @@ def validate_cuda_output(cuda_code: str) -> Dict[str, Any]:
         issues.append("No kernel launch configuration (<<< >>>) found")
     if not has_host:
         issues.append("No host wrapper function found")
+    if not has_memory_ops:
+        issues.append("No CUDA memory operations (cudaMalloc/cudaMemcpy/cudaFree)")
     if not has_sync:
         issues.append("No cudaDeviceSynchronize() after kernel launch")
     if not has_error_check:
@@ -203,15 +356,25 @@ def validate_cuda_output(cuda_code: str) -> Dict[str, Any]:
     if not has_bounds:
         issues.append("No bounds guarding (if (idx < n)) detected")
 
+    # Determine validation level
+    if has_kernel and has_launch and has_host:
+        validation_level = "full"
+    elif has_kernel:
+        validation_level = "structural"
+    else:
+        validation_level = "none"
+
     return {
         "valid": has_kernel and has_launch and has_host,
         "issues": issues,
         "has_kernel": has_kernel,
         "has_launch": has_launch,
         "has_host": has_host,
+        "has_memory_ops": has_memory_ops,
         "has_sync": has_sync,
         "has_error_check": has_error_check,
         "has_bounds": has_bounds,
+        "validation_level": validation_level,
     }
 
 
@@ -530,21 +693,28 @@ def translate_to_cuda(
     # --- Validate CUDA output ---
     cuda_validation = validate_cuda_output(content)
 
-    # Compute confidence: starts at 1.0, penalizes for missing sections and issues
+    # Compute confidence: a heuristic estimate (0.0-1.0) of translation
+    # reliability based on structural completeness. This is NOT a
+    # probability of correctness — it only reflects whether required
+    # sections and CUDA constructs are present.
     confidence = 1.0
+
+    # Penalize missing required sections
     if not sections.get("CUDA KERNEL"):
-        confidence -= 0.4
+        confidence -= 0.35
     if not sections.get("HOST CODE"):
-        confidence -= 0.3
+        confidence -= 0.25
     if not sections.get("EXPLANATION"):
-        confidence -= 0.1
-    confidence -= len(cuda_validation["issues"]) * 0.05
-    confidence = max(0.0, min(1.0, round(confidence, 2)))
+        confidence -= 0.10
+
+    # Penalize CUDA validation issues
+    confidence -= len(cuda_validation["issues"]) * 0.04
 
     # Check for preamble content (AI added chatter before first section)
     if sections.get("preamble"):
-        confidence -= 0.1
-        confidence = max(0.0, confidence)
+        confidence -= 0.10
+
+    confidence = max(0.0, min(1.0, round(confidence, 2)))
 
     return {
         "success": True,

@@ -737,6 +737,25 @@ def main_app():
                     "AI-assisted review only. Verify with nvcc before production use."
                 )
 
+            # Display confidence and validation findings
+            confidence = res.get("confidence")
+            validation = res.get("validation")
+            if confidence is not None:
+                conf_color = "#3FB950" if confidence >= 0.7 else "#D29922" if confidence >= 0.4 else "#F85149"
+                st.markdown(
+                    f"**Translation confidence:** "
+                    f"<span style='color:{conf_color}'>{confidence:.0%}</span>",
+                    unsafe_allow_html=True,
+                )
+            if validation and validation.get("issues"):
+                with st.expander("⚠️ Validation findings", expanded=confidence < 0.7 if confidence else False):
+                    for issue in validation["issues"]:
+                        st.markdown(f"- {issue}")
+                    st.caption(
+                        "These are structural checks only — they do not prove "
+                        "compilation or runtime correctness."
+                    )
+
             ir_summary = res.get("ir_summary", "")
             if ir_summary:
                 st.caption(f"🔍 {ir_summary}")

@@ -378,14 +378,23 @@ def save_equivalence_result(
 
     findings_json = json.dumps(equivalence_result_to_dict(result), ensure_ascii=False)
 
+    # Determine verification status honestly:
+    # - runtime_tested: CUDA was available AND all reference cases passed
+    # - generated: CUDA was not available, or tests failed
+    # static_passed is NOT set here because semantic equivalence tests only
+    # validate the Python reference; they do not perform static analysis on
+    # the generated CUDA code.
     if result.overall_passed and result.cuda_available:
         status = "runtime_tested"
-    elif result.passed_cases == result.total_cases and result.cuda_available:
-        status = "static_passed"
+        evidence = "reference_tests_passed_cuda_available"
     else:
         status = "generated"
+        evidence = None
 
     if status not in VERIFICATION_STATUSES:
         status = "generated"
+        evidence = None
 
-    return update_verification(translation_id, status, findings_json)
+    return update_verification(
+        translation_id, status, findings_json, verification_evidence=evidence
+    )

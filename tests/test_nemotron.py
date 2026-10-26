@@ -358,3 +358,192 @@ def test_chat_completion_local_connection_error_sanitized(monkeypatch):
             # Error message must not contain the API key or authorization header
             assert "Bearer" not in str(exc)
             assert "lm-studio" not in str(exc)
+
+
+# --- Phase 2E: Regression tests for validation ---
+
+
+def test_validate_python_input_valid_function():
+    """Valid Python function with array access should pass validation."""
+    source = "def vec_add(a, b, c, n):\n    for i in range(n):\n        c[i] = a[i] + b[i]\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is True
+    assert result["syntax_valid"] is True
+    assert "vec_add" in result["functions"]
+    assert "a" in result["array_accesses"]
+    assert "b" in result["array_accesses"]
+    assert "c" in result["array_accesses"]
+
+
+def test_validate_python_input_invalid_syntax():
+    """Invalid Python syntax should be rejected."""
+    source = "def vec_add(a, b, c, n):\n    for i in range(n):\n        c[i] = a[i] + b[i]\n    return c\n)  # extra paren"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert result["syntax_valid"] is False
+    assert "invalid_python_syntax" in result["unsupported"]
+    assert result["syntax_error"] is not None
+
+
+def test_validate_python_input_unsupported_yield():
+    """Generator with yield should be rejected."""
+    source = "def gen(n):\n    for i in range(n):\n        yield i\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "yield" in result["unsupported"]
+
+
+def test_validate_python_input_unsupported_class():
+    """Class definition should be rejected."""
+    source = "class MyClass:\n    def method(self):\n        pass\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "class_definition" in result["unsupported"]
+
+
+def test_validate_python_input_unsupported_eval():
+    """eval() call should be rejected."""
+    source = "def f(x):\n    return eval(x)\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "eval_exec" in result["unsupported"]
+
+
+def test_validate_python_input_unsupported_try_except():
+    """try/except should be rejected."""
+    source = "def f(x):\n    try:\n        return x\n    except:\n        return 0\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "try_except" in result["unsupported"]
+
+
+def test_validate_python_input_no_function():
+    """Code without function definition should be rejected."""
+    source = "x = [1, 2, 3]\ny = [v * 2 for v in x]\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "no_function_definition" in result["unsupported"]
+
+
+def test_validate_python_input_warning_no_array_access():
+    """Function without array access should produce warning but still pass."""
+    source = "def f(x):\n    return x + 1\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is True
+    assert "no_array_access_detected" in result["warnings"]
+
+
+def test_validate_python_input_decorator_rejected():
+    """Decorator should be rejected."""
+    source = "@decorator\ndef f(x):\n    return x\n"
+    result = nemotron.validate_python_input(source)
+    assert result["supported"] is False
+    assert "decorator" in result["unsupported"]
+
+
+def test_validate_cuda_output_complete():
+    """Complete CUDA code should pass validation."""
+    cuda = """
+__global__ void vec_add(float* a, float* b, float* c, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) c[idx] = a[idx] + b[idx];
+}
+void host_launch(float* a, float* b, float* c, int n) {
+    float *d_a, *d_b, *d_c;
+    cudaMalloc(&d_a, n * sizeof(float));
+    cudaMemcpy(d_a, a, n * sizeof(float), cudaMemcpyHostToDevice);
+    vec_add<<<(n + 255) / 256, 256>>>(d_a, d_b, d_c, n);
+    cudaDeviceSynchronize();
+    cudaGetLastError();
+    cudaMemcpy(c, d_c, n * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+}
+"""
+    result = nemotron.validate_cuda_output(cuda)
+    assert result["valid"] is True
+    assert result["has_kernel"] is True
+    assert result["has_launch"] is True
+    assert result["has_host"] is True
+    assert result["has_memory_ops"] is True
+    assert result["has_sync"] is True
+    assert result["has_error_check"] is True
+    assert result["has_bounds"] is True
+    assert result["validation_level"] == "full"
+
+
+def test_validate_cuda_output_empty():
+    """Empty CUDA code should fail validation."""
+    result = nemotron.validate_cuda_output("")
+    assert result["valid"] is False
+    assert result["validation_level"] == "none"
+    assert "Empty CUDA code" in result["issues"]
+
+
+def test_validate_cuda_output_missing_kernel():
+    """CUDA code without __global__ kernel should fail."""
+    cuda = "void host_func() { int x = 0; }"
+    result = nemotron.validate_cuda_output(cuda)
+    assert result["valid"] is False
+    assert result["has_kernel"] is False
+    assert "No __global__ kernel function found" in result["issues"]
+
+
+def test_validate_cuda_output_missing_launch():
+    """CUDA code without kernel launch should fail."""
+    cuda = """
+__global__ void kernel() { }
+void host() { }
+"""
+    result = nemotron.validate_cuda_output(cuda)
+    assert result["valid"] is False
+    assert result["has_launch"] is False
+    assert "No kernel launch configuration (<<< >>>) found" in result["issues"]
+
+
+def test_validate_cuda_output_superficial_match_not_enough():
+    """Code containing 'cuda' but no kernel should not pass as valid."""
+    cuda = "void foo() { cudaVariable = 0; }"
+    result = nemotron.validate_cuda_output(cuda)
+    assert result["valid"] is False
+    assert result["has_kernel"] is False
+
+
+def test_translate_to_cuda_validation_included(monkeypatch):
+    """translate_to_cuda should include validation and confidence in output."""
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value={
+        "choices": [{"message": {
+            "content": "CUDA KERNEL:\n```cpp\n__global__ void k() {}\n```\nHOST CODE:\n```cpp\nvoid launch() {}\n```\nEXPLANATION:\nSimple.\n"
+        }}]
+    })
+
+    import requests
+    with patch("app.services.nemotron.requests.post", return_value=mock_resp):
+        result = nemotron.translate_to_cuda("def f(x): return x")
+    assert result["success"] is True
+    assert "validation" in result
+    assert "confidence" in result
+    assert "input_validation" in result
+    assert isinstance(result["confidence"], float)
+    assert 0.0 <= result["confidence"] <= 1.0
+
+
+def test_translate_to_cuda_low_confidence_incomplete(monkeypatch):
+    """Incomplete CUDA output should produce low confidence."""
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value={
+        "choices": [{"message": {"content": "Some text without proper sections"}}]
+    })
+
+    import requests
+    with patch("app.services.nemotron.requests.post", return_value=mock_resp):
+        result = nemotron.translate_to_cuda("def f(x): return x")
+    assert result["success"] is True
+    assert result["confidence"] < 0.5
+    assert result["validation"]["valid"] is False
